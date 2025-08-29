@@ -30,8 +30,8 @@ export async function POST(request: NextRequest) {
       console.error("[v0] Authentication failed - returning 401")
       return NextResponse.json(
         {
-          error: "Unauthorized",
-          details: authError?.message || "No user found",
+          error: "Unauthorized - Please login to create reports",
+          details: authError?.message || "No authenticated user found",
           debug: "Authentication failed in local environment",
         },
         { status: 401 },
@@ -72,9 +72,9 @@ export async function POST(request: NextRequest) {
         console.error("[v0] Error creating profile:", createError)
         return NextResponse.json(
           {
-            error: "User profile could not be created",
+            error: "User profile creation failed",
             details: createError.message,
-            debug: "Profile creation failed",
+            debug: "Could not create user profile in database",
           },
           { status: 403 },
         )
@@ -96,8 +96,8 @@ export async function POST(request: NextRequest) {
       console.error("[v0] Role authorization failed")
       return NextResponse.json(
         {
-          error: "Only TU, Admin, and Coordinator can create reports",
-          details: `Current role: ${profile.role}`,
+          error: "Access denied - Insufficient permissions",
+          details: `Only TU, Admin, and Coordinator can create reports. Your role: ${profile.role}`,
           debug: "Role authorization failed",
         },
         { status: 403 },
@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
       derajat: reportFields.derajat || [],
       status: status,
       priority: priority,
-      progress: 0, // Explicitly set progress to 0
+      progress: 0, // Start with 0, will be updated to "Dalam Proses" after creation
       created_by: user.id,
       current_holder: user.id,
     }
@@ -143,18 +143,38 @@ export async function POST(request: NextRequest) {
 
     if (reportError) {
       console.error("[v0] Error creating report:", reportError)
+      let errorMessage = "Failed to create report"
+      if (reportError.code === "23505") {
+        errorMessage = "Report with this number already exists"
+      } else if (reportError.code === "23502") {
+        errorMessage = "Required field is missing"
+      } else if (reportError.code === "42501") {
+        errorMessage = "Database permission denied"
+      } else {
+        errorMessage = reportError.message || "Database error occurred"
+      }
+
       return NextResponse.json(
         {
-          error: "Failed to create report",
-          details: reportError.message,
-          debug: "Database insert failed",
-          reportData: reportInsertData, // Include data for debugging
+          error: "Database Error",
+          details: errorMessage,
+          debug: `Supabase error: ${reportError.code} - ${reportError.message}`,
+          reportData: reportInsertData,
         },
         { status: 500 },
       )
     }
 
     console.log("[v0] Report created successfully:", report.id)
+
+    const { error: progressError } = await supabase
+      .from("reports")
+      .update({ progress: 25 }) // Set to 25% to indicate "Dalam Proses"
+      .eq("id", report.id)
+
+    if (progressError) {
+      console.error("[v0] Error updating progress:", progressError)
+    }
 
     // Insert file attachments if any
     if (originalFiles && originalFiles.length > 0) {
@@ -200,17 +220,19 @@ export async function POST(request: NextRequest) {
       success: true,
       report: {
         ...report,
+        progress: 25, // Return updated progress
         trackingNumber: tracking?.tracking_number || `TRK-${report.id.slice(0, 8)}`,
       },
     })
   } catch (error) {
     console.error("[v0] Error in report creation:", error)
+    const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
     return NextResponse.json(
       {
-        error: "Internal server error",
-        details: error instanceof Error ? error.message : "Unknown error",
-        debug: "Unexpected error occurred",
-        stack: error instanceof Error ? error.stack : undefined,
+        error: "Server Error",
+        details: errorMessage,
+        debug: "Unexpected error in report creation process",
+        stack: process.env.NODE_ENV === "development" ? (error instanceof Error ? error.stack : undefined) : undefined,
       },
       { status: 500 },
     )
