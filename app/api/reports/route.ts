@@ -8,17 +8,13 @@ export async function POST(request: NextRequest) {
     console.log("[v0] Environment check:")
     console.log("[v0] - NODE_ENV:", process.env.NODE_ENV)
     console.log("[v0] - Request URL:", request.url)
-    console.log("[v0] - Request headers:", Object.fromEntries(request.headers.entries()))
 
     const reportData = await request.json()
     console.log("[v0] Report data received:", reportData)
     const { originalFiles, ...reportFields } = reportData
 
     const cookieStore = cookies()
-    console.log("[v0] Cookie store created")
-
     const supabase = createServerClient(cookieStore)
-    console.log("[v0] Supabase client created")
 
     console.log("[v0] Attempting to get authenticated user...")
     const {
@@ -58,13 +54,12 @@ export async function POST(request: NextRequest) {
     if (profileError || !profile) {
       console.log("[v0] Profile not found, creating new profile for user:", user.id)
 
-      // Try to create missing profile
       const { data: newProfile, error: createError } = await supabase
         .from("profiles")
         .insert({
           id: user.id,
           name: user.email?.split("@")[0] || "User",
-          role: "Staff", // Default role
+          role: "Staff",
         })
         .select("role")
         .single()
@@ -109,31 +104,36 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Generate tracking number
-    const trackingNumber = `TRK-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`
-
     const validStatuses = ["draft", "in-progress", "completed", "revision-required", "forwarded-to-tu"]
     const status = validStatuses.includes(reportFields.status) ? reportFields.status : "draft"
 
     const validPriorities = ["rendah", "sedang", "tinggi"]
     const priority = validPriorities.includes(reportFields.priority) ? reportFields.priority : "sedang"
 
-    console.log("[v0] Attempting to create report with user ID:", user.id)
+    const reportInsertData = {
+      no_surat: reportFields.noSurat,
+      hal: reportFields.hal,
+      layanan: reportFields.layanan,
+      dari: reportFields.dari,
+      tanggal_surat: reportFields.tanggalSurat,
+      tanggal_agenda: reportFields.tanggalAgenda,
+      no_agenda: reportFields.noAgenda || null,
+      kelompok_asal_surat: reportFields.kelompokAsalSurat || null,
+      agenda_sestama: reportFields.agendaSestama || null,
+      sifat: reportFields.sifat || [],
+      derajat: reportFields.derajat || [],
+      status: status,
+      priority: priority,
+      progress: 0, // Explicitly set progress to 0
+      created_by: user.id,
+      current_holder: user.id,
+    }
+
+    console.log("[v0] Attempting to create report with data:", reportInsertData)
 
     const { data: report, error: reportError } = await supabase
       .from("reports")
-      .insert({
-        no_surat: reportFields.noSurat,
-        hal: reportFields.hal,
-        layanan: reportFields.layanan,
-        dari: reportFields.dari,
-        tanggal_surat: reportFields.tanggalSurat,
-        tanggal_agenda: reportFields.tanggalAgenda,
-        status: status,
-        priority: priority,
-        created_by: user.id, // Use real authenticated user UUID
-        current_holder: user.id, // Use real authenticated user UUID
-      })
+      .insert(reportInsertData)
       .select()
       .single()
 
@@ -148,13 +148,13 @@ export async function POST(request: NextRequest) {
           error: "Failed to create report",
           details: reportError.message,
           debug: "Database insert failed",
+          reportData: reportInsertData, // Include data for debugging
         },
         { status: 500 },
       )
     }
 
     console.log("[v0] Report created successfully:", report.id)
-    console.log("[v0] === REPORT CREATION DEBUG END ===")
 
     // Insert file attachments if any
     if (originalFiles && originalFiles.length > 0) {
@@ -164,7 +164,7 @@ export async function POST(request: NextRequest) {
         file_url: file.fileUrl,
         file_type: "original",
         file_size: file.size || null,
-        uploaded_by: user.id, // Use real authenticated user UUID
+        uploaded_by: user.id,
       }))
 
       const { error: filesError } = await supabase.from("file_attachments").insert(fileAttachments)
@@ -179,7 +179,7 @@ export async function POST(request: NextRequest) {
     const { error: workflowError } = await supabase.from("workflow_history").insert({
       report_id: report.id,
       action: "Laporan dibuat",
-      user_id: user.id, // Use real authenticated user UUID
+      user_id: user.id,
       status: status,
       notes: `Laporan baru dibuat oleh ${profile.role}`,
     })
@@ -193,6 +193,8 @@ export async function POST(request: NextRequest) {
       .select("tracking_number")
       .eq("report_id", report.id)
       .single()
+
+    console.log("[v0] === REPORT CREATION DEBUG END ===")
 
     return NextResponse.json({
       success: true,
@@ -208,6 +210,7 @@ export async function POST(request: NextRequest) {
         error: "Internal server error",
         details: error instanceof Error ? error.message : "Unknown error",
         debug: "Unexpected error occurred",
+        stack: error instanceof Error ? error.stack : undefined,
       },
       { status: 500 },
     )
